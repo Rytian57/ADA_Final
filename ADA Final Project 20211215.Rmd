@@ -1,0 +1,357 @@
+---
+title: "ADA Final Project"
+author: "Ruiyi Tian"
+date: "12/10/2021"
+output: html_document
+---
+
+## Install packages
+```{r}
+pacman::p_load(survminer,survival,tidyverse,lmtest,foreign,readxl,table1,ggplot2)
+#survminer: for pairwise diffs
+#survival: for calculating KM values
+#tidyverse: for various packages
+#lmtest: model comparison
+#foreign: read in the dta file
+```
+
+## Import dataset and data managment
+```{r}
+data <- read_excel("/Users/ruiyi/Dropbox (Personal 2)/MPH/6_2021 Fall/Advanced Data Analysis/Final Project/Analysis/ADAdata_Analysis_20211210.xlsx")
+
+# Assign ID for sample participants
+data$id <- rownames(data)
+
+# Esophageal Cancer (EC) Histology Coding: EAC vs. ESCC
+EC <- data %>%
+  mutate(EAC=ifelse(`Histologic Type ICD-O-3`>=8140 & `Histologic Type ICD-O-3`<=8573,1,0),
+         ESCC=ifelse(`Histologic Type ICD-O-3`>=8050 & `Histologic Type ICD-O-3`<=8082,1,0),
+         Status = case_when(SurvivalFlag == "Incomplete dates are available and there cannot be zero days of follow-up" ~ 0,
+                            SurvivalFlag == "Incomplete dates are available and there could be zero days of follow-up" ~ 0,
+                            SurvivalFlag == "Not calculated because a Death Certificate Only or Autopsy Only case" ~ 0,
+                            SurvivalFlag == "Complete dates are available and there are 0 days of survival" ~ 1,
+                            SurvivalFlag == "Complete dates are available and there are more than 0 days of survival" ~ 1),
+         Treatment = case_when(Treatment == "Blank(s)" ~ NA_character_,
+                               Treatment == "Sequence unknown" ~ NA_character_,
+                               Treatment == "Systemic therapy both before and after surgery" ~ "Yes",
+                               Treatment == "Systemic therapy before surgery" ~ "Yes",
+                               Treatment == "Systemic therapy after surgery" ~ "Yes",
+                               Treatment == "Surgery both before and after systemic therapy" ~ "Yes",
+                               Treatment == "Intraoperative systemic therapy" ~ "Yes",
+                               Treatment == "Intraop systemic rx & oth systemic rx before/after surg" ~ "Yes",
+                               Treatment == "No systemic therapy and/or surgical procedures" ~ "No"),
+         SurvivalMo = as.integer(SurvivalMo),
+         Histology = case_when(EAC == 1 ~ "EAC",
+                               ESCC == 1 ~ "ESCC",
+                               EAC == 0 & ESCC == 0 ~ "Unclassified"),
+         YearDiagnosis_Cat = case_when(YearDiagnosis < 2010 ~ 1,
+                                        YearDiagnosis >=2010 & YearDiagnosis < 2014 ~ 2,
+                                        YearDiagnosis >= 2014 ~ 3),
+         SurvivalMo = as.numeric(SurvivalMo),
+         # SurvivalMo = case_when(SurvivalMo > 60 ~ 60,
+         #                        TRUE ~ SurvivalMo)
+         ) %>%
+  select(Treatment, SurvivalMo, Status, Age, Sex, YearDiagnosis, YearDiagnosis_Cat, Race, Treatment, CoD, AJCC_TNM, EAC, ESCC, Histology) %>%
+  drop_na(Treatment)
+
+
+EC <- EC[EC$AJCC_TNM != "Blank(s)" & EC$AJCC_TNM != "NA" & EC$AJCC_TNM !=  "UNK Stage",] # drop those with missing stage information
+# table(EC$AJCC_TNM)
+EC <- EC %>%
+  mutate(stage = case_when(AJCC_TNM == "I" ~ 1,
+                           AJCC_TNM == "IE" ~ 1,
+                           AJCC_TNM == "IEA" ~ 1,
+                           AJCC_TNM == "IEB" ~ 1,
+                           AJCC_TNM == "IIA" ~ 2,
+                           AJCC_TNM == "IIB" ~ 2,
+                           AJCC_TNM == "IIE" ~ 2,
+                           AJCC_TNM == "IIS" ~ 2,
+                           AJCC_TNM == "IIEA" ~2,
+                           AJCC_TNM == "IIEB" ~2,
+                           AJCC_TNM == "III" ~ 3,
+                           AJCC_TNM == "IIIA" ~ 3,
+                           AJCC_TNM == "IIIE" ~ 3,
+                           AJCC_TNM == "IIIEA" ~ 3,
+                           AJCC_TNM == "IIIEB" ~ 3,
+                           AJCC_TNM == "IIIESA" ~ 3,
+                           AJCC_TNM == "IV" ~ 4,
+                           AJCC_TNM == "IVA" ~ 4,
+                           AJCC_TNM == "IVB" ~ 4,
+                           AJCC_TNM == "IVNOS" ~ 4))
+
+EC$Treatment <- as.factor(EC$Treatment)
+EC$Treatment <- relevel(EC$Treatment,"Yes")
+# nrow(EC[EC$ESCC == 1,])
+# 42839 EAC, 24143 ESCC, 6653 Unclassified
+
+EC$YearDiagnosis_Cat_fac <- as.factor(EC$YearDiagnosis_Cat)
+EC <- EC[EC$Age != "15-19 years" & EC$Age != "10-14 years",] # drop those with age under 20
+```
+
+# Figure 1 that shows exclusions to arrive at your analytic dataset can be made with a package called DiagrammeR and the function grViz. An example of this for the cerv dataset is shown below
+```{r}
+#install.packages("DiagrammeR")
+library(DiagrammeR)
+
+#Figure 1
+grViz("digraph flowchart {
+
+      # node definitions with substituted label text
+      node [fontname = Helvetica, shape = rectangle, fontsize=10] 
+      #notes indicate how many boxes you will have in your diagram. Since I have two sets of exclusions, I will have three nodes.
+      tab1 [label = '@@1']
+      tab2 [label = '@@2']
+      tab3 [label = '@@3']
+      
+      # edge definitions with the node IDs are used to indicate how the rectangle boxes flow from each other. This is a simple flow chart but I could create branching instead as below
+      tab1 -> tab2 -> tab3 
+}
+      #This set of code provides the text in each rectangle box.
+      [1]: 'Records received from SEER for having one prime site cancer diagnoses at esophageal n=73,635'
+      [2]: 'Excluding 42,242 individuals with missing data on variables used in the analysis n=31,393'
+      [3]: 'Excluding 3 individuals age below 20 n=31,390'
+      ")
+
+
+```
+
+# check for linearity of the log_WBC term
+```{r}
+#Box Tidwell technique, test the assumption of linearity
+boxTidwelllwbc3 <- coxph(Surv(survt, status)~rx + logwbc + sex + log_wbc.times.lwbc3, leuk)
+
+summary(boxTidwelllwbc3) 
+#P value for the interaction term > 0.05, indicating that the linearity assumption is met.
+```
+
+# check for influential observations: assess whether any observations are exerting influence on the coefficient estimates. 
+```{r}
+sex_treat_adj.mod<-coxph(Surv(survt, status)~rx + logwbc + sex, leuk)
+summary(sex_treat_adj.mod)
+```
+
+# type = dfbeta: calculate the dfbeta residuals, which capture the estimated changes in the regression coefficients upon deleting each observation in turn.
+```{r}
+
+ggcoxdiagnostics(sex_treat_adj.mod, type = "dfbeta", sline=FALSE, ggtheme = theme_bw()) 
+#the pattern should not change the beta by a large degree. Here the betas for logwbc change by a factor of less than +/-0.2 for all covariates 
+```
+
+
+## Table 1
+```{r}
+table1(
+  ~ Treatment
+  + SurvivalMo
+  + Age
+  + Sex
+  + Status
+  + YearDiagnosis
+  + YearDiagnosis_Cat
+  + Race
+  + CoD
+  + AJCC_TNM
+  + stage
+  + factor(stage)
+  + factor(YearDiagnosis)
+  + factor(YearDiagnosis_Cat)
+  + factor(EAC)
+  + factor(ESCC)|
+    factor(Histology),
+  data = EC,
+  overall = "Total"
+)
+```
+## Survival Analysis
+```{r}
+#### Main Association ####
+# Check assumption
+main <- coxph(Surv(SurvivalMo, Status)~ Treatment + Age + Sex + Race + stage, data = EC)
+cox.zph(main)
+
+#P value for the interaction term > 0.05, indicating that the linearity assumption is met.
+
+
+All <- list(round(summary(coxph(Surv(SurvivalMo, Status) ~ Treatment + Age + Sex + Race + stage, data = EC))$conf.int[1,c(1,3:4)],2),
+            round(summary(coxph(Surv(SurvivalMo, Status) ~ Treatment + Age + Sex + Race + stage, data = EC[EC$EAC == 1,]))$conf.int[1,c(1,3:4)],2),
+            round(summary(coxph(Surv(SurvivalMo, Status) ~ Treatment + Age + Sex + Race + stage, data = EC[EC$ESCC == 1,]))$conf.int[1,c(1,3:4)],2))
+
+CancerSpecific <- list(round(summary(coxph(Surv(SurvivalMo, Status) ~ Treatment + Age + Sex + Race + stage, data = EC[EC$CoD == "Dead (attributable to this cancer dx)",]))$conf.int[1,c(1,3:4)],2),
+            round(summary(coxph(Surv(SurvivalMo, Status) ~ Treatment + Age + Sex + Race + stage, data = EC[EC$EAC == 1 & EC$CoD == "Dead (attributable to this cancer dx)",]))$conf.int[1,c(1,3:4)],2),
+            round(summary(coxph(Surv(SurvivalMo, Status) ~ Treatment + Age + Sex + Race + stage, data = EC[EC$ESCC == 1 & EC$CoD == "Dead (attributable to this cancer dx)",]))$conf.int[1,c(1,3:4)],2))
+
+#### Effect Modification ####
+# Categorical
+EC$var <- with(EC, interaction(Treatment,  YearDiagnosis_Cat_fac))
+all <- round(summary(coxph(Surv(SurvivalMo, Status) ~ var + Age + Sex + Race + stage, data = EC))$conf.int[1:5,c(1,3:4)],2)
+eac <- round(summary(coxph(Surv(SurvivalMo, Status) ~ var + Age + Sex + Race + stage, data = EC[EC$EAC == 1,]))$conf.int[1:5,c(1,3:4)],2)
+escc <- round(summary(coxph(Surv(SurvivalMo, Status) ~ var + Age + Sex + Race + stage, data = EC[EC$ESCC == 1,]))$conf.int[1:5,c(1,3:4)],2)
+
+coxph(Surv(SurvivalMo, Status) ~ Treatment*YearDiagnosis_Cat + Age + Sex + Race + stage, data = EC)
+coxph(Surv(SurvivalMo, Status) ~ Treatment*YearDiagnosis_Cat + Age + Sex + Race + stage, data = EC[EC$EAC == 1,])
+coxph(Surv(SurvivalMo, Status) ~ Treatment*YearDiagnosis_Cat + Age + Sex + Race + stage, data = EC[EC$ESCC == 1,])
+
+
+dotCOLS = c("#81144e","#00305d", "#79831e")
+
+all <- data.frame(all)
+all[nrow(all) + 1,] = c(1,1,1)
+rownames(all) <- c("4.No-treatment + 2006-2009","2.Yes-treatment + 2010-2013",
+                   "5.No-treatment + 2010-2013", "3.Yes-treatment + 2014-2018","6.No-treatment + 2014-2018", 
+                   "1.Yes-treatment + 2006-2009")
+all$treatment <- c("No treatment", "Yes treatment","No treatment","Yes treatment",
+                   "No treatment", "Yes treatment")
+all$year <- c("2006-2009", "2010-2013", "2010-2013","2014-2018","2014-2018","2006-2009")
+all$label <- rownames(all)
+colnames(all) <- c("HR", "2.5%", "97.5%",
+                   "treatment", "year",
+                   "label")
+ggplot(data=all, aes(x=HR, y=label))+ 
+        geom_errorbarh(aes(xmax = `2.5%`, xmin = `97.5%`)) +
+        geom_point(aes(colour = year), size = 5) +
+        geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=1 after flip
+        # coord_flip() +  # flip coordinates (puts labels on y axis)
+        xlab("HR (95% CI)") + ylab("") + scale_color_manual(values=dotCOLS) + 
+        theme_bw()  # use a white background 
+
+### EAC
+eac <- data.frame(eac)
+eac[nrow(eac) + 1,] = c(1,1,1)
+rownames(eac) <- c("4.No-treatment + 2006-2009","2.Yes-treatment + 2010-2013",
+                   "5.No-treatment + 2010-2013", "3.Yes-treatment + 2014-2018","6.No-treatment + 2014-2018", 
+                   "1.Yes-treatment + 2006-2009")
+eac$treatment <- c("No treatment", "Yes treatment","No treatment","Yes treatment",
+                   "No treatment", "Yes treatment")
+eac$year <- c("2006-2009", "2010-2013", "2010-2013","2014-2018","2014-2018","2006-2009")
+eac$label <- rownames(eac)
+colnames(eac) <- c("HR", "2.5%", "97.5%",
+                   "treatment", "year",
+                   "label")
+ggplot(data=eac, aes(x=HR, y=label))+ 
+        geom_errorbarh(aes(xmax = `2.5%`, xmin = `97.5%`)) +
+        geom_point(aes(colour = year), size = 5) +
+        geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=1 after flip
+        # coord_flip() +  # flip coordinates (puts labels on y axis)
+        xlab("HR (95% CI)") + ylab("") + scale_color_manual(values=dotCOLS) + 
+        theme_bw()  # use a white background 
+
+### ESCC
+escc <- data.frame(escc)
+escc[nrow(escc) + 1,] = c(1,1,1)
+rownames(escc) <- c("4.No-treatment + 2006-2009","2.Yes-treatment + 2010-2013",
+                   "5.No-treatment + 2010-2013", "3.Yes-treatment + 2014-2018","6.No-treatment + 2014-2018", 
+                   "1.Yes-treatment + 2006-2009")
+escc$treatment <- c("No treatment", "Yes treatment","No treatment","Yes treatment",
+                   "No treatment", "Yes treatment")
+escc$year <- c("2006-2009", "2010-2013", "2010-2013","2014-2018","2014-2018","2006-2009")
+escc$label <- rownames(escc)
+colnames(escc) <- c("HR", "2.5%", "97.5%",
+                   "treatment", "year",
+                   "label")
+ggplot(data=escc, aes(x=HR, y=label))+ 
+        geom_errorbarh(aes(xmax = `2.5%`, xmin = `97.5%`)) +
+        geom_point(aes(colour = year), size = 5) +
+        geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=1 after flip
+        # coord_flip() +  # flip coordinates (puts labels on y axis)
+        xlab("HR (95% CI)") + ylab("") + scale_color_manual(values=dotCOLS) + 
+        theme_bw()  # use a white background 
+
+rbind(all, eac, escc)
+
+######## Cancer Specifit Death
+#### Effect Modification ####
+# Categorical
+EC$var <- with(EC, interaction(Treatment,  YearDiagnosis_Cat_fac))
+all <- round(summary(coxph(Surv(SurvivalMo, Status) ~ var + Age + Sex + Race + stage, data = EC[EC$CoD == "Dead (attributable to this cancer dx)",]))$conf.int[1:5,c(1,3:4)],2)
+eac <- round(summary(coxph(Surv(SurvivalMo, Status) ~ var + Age + Sex + Race + stage, data = EC[EC$EAC == 1 & EC$CoD == "Dead (attributable to this cancer dx)",]))$conf.int[1:5,c(1,3:4)],2)
+escc <- round(summary(coxph(Surv(SurvivalMo, Status) ~ var + Age + Sex + Race + stage, data = EC[EC$ESCC == 1 & EC$CoD == "Dead (attributable to this cancer dx)",]))$conf.int[1:5,c(1,3:4)],2)
+
+coxph(Surv(SurvivalMo, Status) ~ Treatment*YearDiagnosis_Cat + Age + Sex + Race + stage, data = EC)
+coxph(Surv(SurvivalMo, Status) ~ Treatment*YearDiagnosis_Cat + Age + Sex + Race + stage, data = EC[EC$EAC == 1,])
+coxph(Surv(SurvivalMo, Status) ~ Treatment*YearDiagnosis_Cat + Age + Sex + Race + stage, data = EC[EC$ESCC == 1,])
+
+
+dotCOLS = c("#81144e","#00305d", "#79831e")
+
+all <- data.frame(all)
+all[nrow(all) + 1,] = c(1,1,1)
+rownames(all) <- c("4.No-treatment + 2006-2009","2.Yes-treatment + 2010-2013",
+                   "5.No-treatment + 2010-2013", "3.Yes-treatment + 2014-2018","6.No-treatment + 2014-2018", 
+                   "1.Yes-treatment + 2006-2009")
+all$treatment <- c("No treatment", "Yes treatment","No treatment","Yes treatment",
+                   "No treatment", "Yes treatment")
+all$year <- c("2006-2009", "2010-2013", "2010-2013","2014-2018","2014-2018","2006-2009")
+all$label <- rownames(all)
+colnames(all) <- c("HR", "2.5%", "97.5%",
+                   "treatment", "year",
+                   "label")
+ggplot(data=all, aes(x=HR, y=label))+ 
+        geom_errorbarh(aes(xmax = `2.5%`, xmin = `97.5%`)) +
+        geom_point(aes(colour = year), size = 5) +
+        geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=1 after flip
+        # coord_flip() +  # flip coordinates (puts labels on y axis)
+        xlab("HR (95% CI)") + ylab("") + scale_color_manual(values=dotCOLS) + 
+        theme_bw()  # use a white background 
+
+### EAC
+eac <- data.frame(eac)
+eac[nrow(eac) + 1,] = c(1,1,1)
+rownames(eac) <- c("4.No-treatment + 2006-2009","2.Yes-treatment + 2010-2013",
+                   "5.No-treatment + 2010-2013", "3.Yes-treatment + 2014-2018","6.No-treatment + 2014-2018", 
+                   "1.Yes-treatment + 2006-2009")
+eac$treatment <- c("No treatment", "Yes treatment","No treatment","Yes treatment",
+                   "No treatment", "Yes treatment")
+eac$year <- c("2006-2009", "2010-2013", "2010-2013","2014-2018","2014-2018","2006-2009")
+eac$label <- rownames(eac)
+colnames(eac) <- c("HR", "2.5%", "97.5%",
+                   "treatment", "year",
+                   "label")
+ggplot(data=eac, aes(x=HR, y=label))+ 
+        geom_errorbarh(aes(xmax = `2.5%`, xmin = `97.5%`)) +
+        geom_point(aes(colour = year), size = 5) +
+        geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=1 after flip
+        # coord_flip() +  # flip coordinates (puts labels on y axis)
+        xlab("HR (95% CI)") + ylab("") + scale_color_manual(values=dotCOLS) + 
+        theme_bw()  # use a white background 
+
+### ESCC
+escc <- data.frame(escc)
+escc[nrow(escc) + 1,] = c(1,1,1)
+rownames(escc) <- c("4.No-treatment + 2006-2009","2.Yes-treatment + 2010-2013",
+                   "5.No-treatment + 2010-2013", "3.Yes-treatment + 2014-2018","6.No-treatment + 2014-2018", 
+                   "1.Yes-treatment + 2006-2009")
+escc$treatment <- c("No treatment", "Yes treatment","No treatment","Yes treatment",
+                   "No treatment", "Yes treatment")
+escc$year <- c("2006-2009", "2010-2013", "2010-2013","2014-2018","2014-2018","2006-2009")
+escc$label <- rownames(escc)
+colnames(escc) <- c("HR", "2.5%", "97.5%",
+                   "treatment", "year",
+                   "label")
+ggplot(data=escc, aes(x=HR, y=label))+ 
+        geom_errorbarh(aes(xmax = `2.5%`, xmin = `97.5%`)) +
+        geom_point(aes(colour = year), size = 5) +
+        geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=1 after flip
+        # coord_flip() +  # flip coordinates (puts labels on y axis)
+        xlab("HR (95% CI)") + ylab("") + scale_color_manual(values=dotCOLS) + 
+        theme_bw()  # use a white background 
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
